@@ -1,10 +1,3 @@
-<p>
-  Provides an OpenAI Speech-To-Text service for the Freeswitch. <br>
-  Also capable to work with <a href="https://github.com/akscf/whisperd target="_blank">whisperd</a>
-</p>
-
-### Usage example
-```XML
 <extension name="openai-asr">
   <condition field="destination_number" expression="^(3222)$">
     <action application="answer"/>
@@ -13,4 +6,3 @@
     <action application="hangup"/>
  </condition>
 </extension>
-```
