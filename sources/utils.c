@@ -1,32 +1,25 @@
-/**
- * (C)2023 aks
- * https://github.com/akscf/
- **/
+/*
+ * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
+ * Copyright (C) 2005-2014, Anthony Minessale II <anthm@freeswitch.org>
+ *
+ * Version: MPL 1.1
+ *
+ * The contents of this file are subject to the Mozilla Public License Version
+ * 1.1 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * Software distributed under the License is distributed on an "AS IS" basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
+ * License.
+ *
+ * Module Contributor(s):
+ *  Konstantin Alexandrin <akscfx@gmail.com>
+ *
+ *
+ */
 #include "mod_openai_asr.h"
-
-extern globals_t globals;
-
-void thread_finished() {
-    switch_mutex_lock(globals.mutex);
-    if(globals.active_threads > 0) { globals.active_threads--; }
-    switch_mutex_unlock(globals.mutex);
-}
-
-void thread_launch(switch_memory_pool_t *pool, switch_thread_start_t fun, void *data) {
-    switch_threadattr_t *attr = NULL;
-    switch_thread_t *thread = NULL;
-
-    switch_mutex_lock(globals.mutex);
-    globals.active_threads++;
-    switch_mutex_unlock(globals.mutex);
-
-    switch_threadattr_create(&attr, pool);
-    switch_threadattr_detach_set(attr, 1);
-    switch_threadattr_stacksize_set(attr, SWITCH_THREAD_STACKSIZE);
-    switch_thread_create(&thread, attr, fun, data, pool);
-
-    return;
-}
 
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len) {
     xdata_buffer_t *buf = NULL;
@@ -55,7 +48,9 @@ void xdata_buffer_free(xdata_buffer_t **buf) {
 void xdata_buffer_queue_clean(switch_queue_t *queue) {
     xdata_buffer_t *data = NULL;
 
-    if(!queue || !switch_queue_size(queue)) { return; }
+    if(!queue || !switch_queue_size(queue)) {
+        return;
+    }
 
     while(switch_queue_trypop(queue, (void *) &data) == SWITCH_STATUS_SUCCESS) {
         if(data) { xdata_buffer_free(&data); }
@@ -74,7 +69,7 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
     return SWITCH_STATUS_FALSE;
 }
 
-char *audio_file_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext) {
+char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext) {
     switch_status_t status = SWITCH_STATUS_FALSE;
     switch_size_t len = (buf_len / sizeof(int16_t));
     switch_file_handle_t fh = { 0 };
@@ -86,12 +81,12 @@ char *audio_file_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, 
     file_name = switch_mprintf("%s%s%s.%s", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR, name_uuid, (file_ext == NULL ? "wav" : file_ext) );
 
     if((status = switch_core_file_open(&fh, file_name, channels, samplerate, flags, NULL)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Open fail: %s\n", file_name);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable open file (%s)\n", file_name);
         goto out;
     }
 
     if((status = switch_core_file_write(&fh, buf, &len)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Write fail (%s)\n", file_name);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to write (%s)\n", file_name);
         goto out;
     }
 

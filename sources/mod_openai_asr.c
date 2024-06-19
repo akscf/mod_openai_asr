@@ -1,43 +1,64 @@
-/**
- * (C)2024 aks
- * https://github.com/akscf/
- **/
+/*
+ * FreeSWITCH Modular Media Switching Software Library / Soft-Switch Application
+ * Copyright (C) 2005-2014, Anthony Minessale II <anthm@freeswitch.org>
+ *
+ * Version: MPL 1.1
+ *
+ * The contents of this file are subject to the Mozilla Public License Version
+ * 1.1 (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * Software distributed under the License is distributed on an "AS IS" basis,
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+ * for the specific language governing rights and limitations under the
+ * License.
+ *
+ * Module Contributor(s):
+ *  Konstantin Alexandrin <akscfx@gmail.com>
+ *
+ *
+ * mod_openai_asr.c -- openai speech-to-text service interface
+ *
+ * Provides OpenAI STT service for the Freeswitch.
+ * https://platform.openai.com/docs/guides/speech-to-text
+ *
+ */
 #include "mod_openai_asr.h"
 
-globals_t globals;
+static globals_t globals;
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_openai_asr_shutdown);
 SWITCH_MODULE_DEFINITION(mod_openai_asr, mod_openai_asr_load, mod_openai_asr_shutdown, NULL);
 
-// ---------------------------------------------------------------------------------------------------------------------------------------------
-static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, void *obj) {
-    volatile asr_ctx_t *_ref = (asr_ctx_t *) obj;
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) _ref;
+
+static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void *obj) {
+    volatile asr_ctx_t *_ref = (asr_ctx_t *)obj;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)_ref;
     switch_status_t status;
     switch_buffer_t *chunk_buffer = NULL;
     switch_buffer_t *curl_recv_buffer = NULL;
     switch_memory_pool_t *pool = NULL;
     cJSON *json = NULL;
-    uint32_t chunk_buffer_size = 0, recv_len = 0;
-    uint8_t fl_do_transcript = false;
-    const void *curl_recv_buffer_ptr = NULL;
+    uint32_t chunk_buffer_size = 0;
+    uint8_t fl_do_transcript = SWITCH_FALSE;
     void *pop = NULL;
 
     switch_mutex_lock(asr_ctx->mutex);
-    asr_ctx->deps++;
+    asr_ctx->refs++;
     switch_mutex_unlock(asr_ctx->mutex);
 
     if(switch_core_new_memory_pool(&pool) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "pool fail\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "switch_core_new_memory_pool()\n");
         goto out;
     }
     if(switch_buffer_create_dynamic(&curl_recv_buffer, 1024, 4096, 8192) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_buffer_create_dynamic()\n");
         goto out;
     }
 
-    while(true) {
+    while(SWITCH_TRUE) {
         if(globals.fl_shutdown || asr_ctx->fl_destroyed) {
             break;
         }
@@ -48,7 +69,7 @@ static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, vo
 
             if(chunk_buffer_size > 0) {
                 if(switch_buffer_create(pool, &chunk_buffer, chunk_buffer_size) != SWITCH_STATUS_SUCCESS) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "mem fail\n");
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "switch_buffer_create()\n");
                     break;
                 }
                 switch_buffer_zero(chunk_buffer);
@@ -56,7 +77,7 @@ static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, vo
             goto timer_next;
         }
 
-        fl_do_transcript = false;
+        fl_do_transcript = SWITCH_FALSE;
         while(switch_queue_trypop(asr_ctx->q_audio, &pop) == SWITCH_STATUS_SUCCESS) {
             xdata_buffer_t *audio_buffer = (xdata_buffer_t *)pop;
             if(globals.fl_shutdown || asr_ctx->fl_destroyed ) {
@@ -65,7 +86,7 @@ static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, vo
             }
             if(audio_buffer && audio_buffer->len) {
                 if(switch_buffer_write(chunk_buffer, audio_buffer->data, audio_buffer->len) >= chunk_buffer_size) {
-                    fl_do_transcript = true;
+                    fl_do_transcript = SWITCH_TRUE;
                     break;
                 }
             }
@@ -82,11 +103,11 @@ static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, vo
             char *chunk_fname = NULL;
 
             if((buf_len = switch_buffer_peek_zerocopy(chunk_buffer, &chunk_buffer_ptr)) > 0 && chunk_buffer_ptr) {
-                chunk_fname = audio_file_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
+                chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
                 if(chunk_fname) {
                     switch_buffer_zero(curl_recv_buffer);
 
-                    status = curl_perform(curl_recv_buffer, (char *)(asr_ctx->opt_model ? asr_ctx->opt_model : globals.opt_model), chunk_fname, NULL);
+                    status = curl_perform(curl_recv_buffer, (char *)(asr_ctx->opt_model ? asr_ctx->opt_model : globals.opt_model), chunk_fname, &globals);
                     http_recv_len = switch_buffer_peek_zerocopy(curl_recv_buffer, &http_response_ptr);
 
                     if(status == SWITCH_STATUS_SUCCESS) {
@@ -100,10 +121,10 @@ static void *SWITCH_THREAD_FUNC transcription_thread(switch_thread_t *thread, vo
                                     cJSON *jres = cJSON_GetObjectItem(json, "text");
                                     if(jres) {
                                         xdata_buffer_t *tbuff = NULL;
-                                        if(xdata_buffer_alloc(&tbuff, jres->valuestring, strlen(jres->valuestring)) == SWITCH_STATUS_SUCCESS) {
+                                        if(xdata_buffer_alloc(&tbuff, (switch_byte_t *)jres->valuestring, strlen(jres->valuestring)) == SWITCH_STATUS_SUCCESS) {
                                             if(switch_queue_trypush(asr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
                                                 switch_mutex_lock(asr_ctx->mutex);
-                                                asr_ctx->transcript_results++;
+                                                asr_ctx->transcription_results++;
                                                 switch_mutex_unlock(asr_ctx->mutex);
                                             } else {
                                                 xdata_buffer_free(&tbuff);
@@ -154,26 +175,30 @@ out:
     }
 
     switch_mutex_lock(asr_ctx->mutex);
-    if(asr_ctx->deps > 0) asr_ctx->deps--;
+    if(asr_ctx->refs > 0) asr_ctx->refs--;
     switch_mutex_unlock(asr_ctx->mutex);
 
-    thread_finished();
+    switch_mutex_lock(globals.mutex);
+    if(globals.active_threads > 0) { globals.active_threads--; }
+    switch_mutex_unlock(globals.mutex);
+
     return NULL;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int samplerate, const char *dest, switch_asr_flag_t *flags) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
-    switch_memory_pool_t *pool = NULL;
+    switch_threadattr_t *attr = NULL;
+    switch_thread_t *thread = NULL;
     asr_ctx_t *asr_ctx = NULL;
 
     if(strcmp(codec, "L16") !=0) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unsupported codec: %s\n", codec);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unsupported encoding: %s\n", codec);
         switch_goto_status(SWITCH_STATUS_FALSE, out);
     }
 
     if((asr_ctx = switch_core_alloc(ah->memory_pool, sizeof(asr_ctx_t))) == NULL) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_core_alloc()\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
@@ -182,54 +207,62 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->channels = 1;
 
    if((status = switch_mutex_init(&asr_ctx->mutex, SWITCH_MUTEX_NESTED, ah->memory_pool)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_mutex_init()\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
+
     switch_queue_create(&asr_ctx->q_audio, QUEUE_SIZE, ah->memory_pool);
     switch_queue_create(&asr_ctx->q_text, QUEUE_SIZE, ah->memory_pool);
 
-    // VAD
     asr_ctx->vad_buffer = NULL;
     asr_ctx->frame_len = 0;
-    asr_ctx->vad_buffer_size = 0; // will be calculated in the feed function
+    asr_ctx->vad_buffer_size = 0;
     asr_ctx->vad_stored_frames = 0;
-    asr_ctx->fl_vad_first_cycle = true;
+    asr_ctx->fl_vad_first_cycle = SWITCH_TRUE;
 
     if((asr_ctx->vad = switch_vad_init(asr_ctx->samplerate, asr_ctx->channels)) == NULL) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't init VAD\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_vad_init()\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
     switch_vad_set_mode(asr_ctx->vad, -1);
     switch_vad_set_param(asr_ctx->vad, "debug", globals.fl_vad_debug);
-    if(globals.vad_silence_ms > 0) { switch_vad_set_param(asr_ctx->vad, "silence_ms", globals.vad_silence_ms); }
-    if(globals.vad_voice_ms > 0) { switch_vad_set_param(asr_ctx->vad, "voice_ms", globals.vad_voice_ms); }
-    if(globals.vad_threshold > 0) { switch_vad_set_param(asr_ctx->vad, "thresh", globals.vad_threshold); }
+    if(globals.vad_silence_ms > 0)  { switch_vad_set_param(asr_ctx->vad, "silence_ms", globals.vad_silence_ms); }
+    if(globals.vad_voice_ms > 0)    { switch_vad_set_param(asr_ctx->vad, "voice_ms", globals.vad_voice_ms); }
+    if(globals.vad_threshold > 0)   { switch_vad_set_param(asr_ctx->vad, "thresh", globals.vad_threshold); }
 
     ah->private_info = asr_ctx;
 
-    thread_launch(ah->memory_pool, transcription_thread, asr_ctx);
+    switch_mutex_lock(globals.mutex);
+    globals.active_threads++;
+    switch_mutex_unlock(globals.mutex);
+
+    switch_threadattr_create(&attr, ah->memory_pool);
+    switch_threadattr_detach_set(attr, 1);
+    switch_threadattr_stacksize_set(attr, SWITCH_THREAD_STACKSIZE);
+    switch_thread_create(&thread, attr, transcribe_thread, asr_ctx, ah->memory_pool);
+
 out:
     return status;
 }
 
 static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *flags) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
-    uint8_t fl_wloop = true;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
+    uint8_t fl_wloop = SWITCH_TRUE;
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->fl_abort = true;
-    asr_ctx->fl_destroyed = true;
+    asr_ctx->fl_abort = SWITCH_TRUE;
+    asr_ctx->fl_destroyed = SWITCH_TRUE;
 
     switch_mutex_lock(asr_ctx->mutex);
-    fl_wloop = (asr_ctx->deps != 0);
+    fl_wloop = (asr_ctx->refs != 0);
     switch_mutex_unlock(asr_ctx->mutex);
 
     if(fl_wloop) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Waiting for unlock (%u locks)!\n", asr_ctx->deps);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Waiting for unlock (refs=%d)...\n", asr_ctx->refs);
         while(fl_wloop) {
             switch_mutex_lock(asr_ctx->mutex);
-            fl_wloop = (asr_ctx->deps != 0);
+            fl_wloop = (asr_ctx->refs != 0);
             switch_mutex_unlock(asr_ctx->mutex);
             switch_yield(100000);
         }
@@ -258,7 +291,7 @@ static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *fla
 static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned int data_len, switch_asr_flag_t *flags) {
     asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
     switch_vad_state_t vad_state = 0;
-    uint8_t fl_has_audio = false;
+    uint8_t fl_has_audio = SWITCH_FALSE;
 
     assert(asr_ctx != NULL);
 
@@ -276,16 +309,15 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(data_len > 0 && asr_ctx->frame_len == 0) {
-        switch_mutex_lock(asr_ctx->mutex);  // lock
+        switch_mutex_lock(asr_ctx->mutex);
         asr_ctx->frame_len = data_len;
-        asr_ctx->ptime = (data_len / sizeof(int16_t)) / (asr_ctx->samplerate / 1000);
-        asr_ctx->chunk_buffer_size = ((globals.chunk_size_sec * 1000) * data_len) / asr_ctx->ptime;
-        asr_ctx->vad_buffer_size = (asr_ctx->frame_len * VAD_STORE_FRAMES);
-        switch_mutex_unlock(asr_ctx->mutex); // unlock
+        asr_ctx->vad_buffer_size = asr_ctx->frame_len * VAD_STORE_FRAMES;
+        asr_ctx->chunk_buffer_size = asr_ctx->samplerate * globals.chunk_time_sec;
+        switch_mutex_unlock(asr_ctx->mutex);
 
         if(switch_buffer_create(ah->memory_pool, &asr_ctx->vad_buffer, asr_ctx->vad_buffer_size) != SWITCH_STATUS_SUCCESS) {
             asr_ctx->vad_buffer_size = 0;
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail (vad_buffer)\n");
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_buffer_create()\n");
         }
     }
 
@@ -295,7 +327,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
                 if(asr_ctx->vad_stored_frames >= VAD_STORE_FRAMES) {
                     switch_buffer_zero(asr_ctx->vad_buffer);
                     asr_ctx->vad_stored_frames = 0;
-                    asr_ctx->fl_vad_first_cycle = false;
+                    asr_ctx->fl_vad_first_cycle = SWITCH_FALSE;
                 }
                 switch_buffer_write(asr_ctx->vad_buffer, data, MIN(asr_ctx->frame_len, data_len));
                 asr_ctx->vad_stored_frames++;
@@ -305,17 +337,17 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         vad_state = switch_vad_process(asr_ctx->vad, (int16_t *)data, (data_len / sizeof(int16_t)));
         if(vad_state == SWITCH_VAD_STATE_START_TALKING) {
             asr_ctx->vad_state = vad_state;
-            fl_has_audio = true;
+            fl_has_audio = SWITCH_TRUE;
         } else if (vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
             asr_ctx->vad_state = vad_state;
-            fl_has_audio = false;
+            fl_has_audio = SWITCH_FALSE;
             switch_vad_reset(asr_ctx->vad);
         } else if (vad_state == SWITCH_VAD_STATE_TALKING) {
             asr_ctx->vad_state = vad_state;
-            fl_has_audio = true;
+            fl_has_audio = SWITCH_TRUE;
         }
     } else {
-        fl_has_audio = true;
+        fl_has_audio = SWITCH_TRUE;
     }
 
     if(fl_has_audio) {
@@ -376,15 +408,15 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
 }
 
 static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_flag_t *flags) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
 
-    return (asr_ctx->transcript_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
+    return (asr_ctx->transcription_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
 }
 
 static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, switch_asr_flag_t *flags) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
     char *result = NULL;
     void *pop = NULL;
 
@@ -399,7 +431,7 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
         xdata_buffer_free(&tbuff);
 
         switch_mutex_lock(asr_ctx->mutex);
-        if(asr_ctx->transcript_results > 0) asr_ctx->transcript_results--;
+        if(asr_ctx->transcription_results > 0) asr_ctx->transcription_results--;
         switch_mutex_unlock(asr_ctx->mutex);
     }
 
@@ -408,7 +440,7 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
 }
 
 static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
 
@@ -416,36 +448,36 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
 }
 
 static switch_status_t asr_pause(switch_asr_handle_t *ah) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
 
     if(!asr_ctx->fl_pause) {
-        asr_ctx->fl_pause = true;
+        asr_ctx->fl_pause = SWITCH_TRUE;
     }
 
     return SWITCH_STATUS_SUCCESS;
 }
 
 static switch_status_t asr_resume(switch_asr_handle_t *ah) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
 
     if(asr_ctx->fl_pause) {
-        asr_ctx->fl_pause = false;
+        asr_ctx->fl_pause = SWITCH_FALSE;
     }
 
     return SWITCH_STATUS_SUCCESS;
 }
 
 static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val) {
-    asr_ctx_t *asr_ctx = (asr_ctx_t *) ah->private_info;
+    asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
 
     if(strcasecmp(param, "language") == 0) {
-        //
+        if(val) asr_ctx->opt_lang = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "model") == 0) {
         if(val) asr_ctx->opt_model = switch_core_strdup(ah->memory_pool, val);
     }
@@ -469,18 +501,16 @@ static switch_status_t asr_unload_grammar(switch_asr_handle_t *ah, const char *n
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-#define CONFIG_NAME "openai_asr.conf"
 SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
     switch_xml_t cfg, xml, settings, param;
     switch_asr_interface_t *asr_interface;
 
     memset(&globals, 0, sizeof(globals));
-
     switch_mutex_init(&globals.mutex, SWITCH_MUTEX_NESTED, pool);
 
-    if((xml = switch_xml_open_cfg(CONFIG_NAME, &cfg, NULL)) == NULL) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't open configuration file: %s\n", CONFIG_NAME);
+    if((xml = switch_xml_open_cfg(MOD_CONFIG_NAME, &cfg, NULL)) == NULL) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to open configuration: %s\n", MOD_CONFIG_NAME);
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
@@ -513,8 +543,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.opt_encoding = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "model")) {
                 if(val) globals.opt_model= switch_core_strdup(pool, val);
-            } else if(!strcasecmp(var, "chunk-size-sec")) {
-                if(val) globals.chunk_size_sec = atoi(val);
+            } else if(!strcasecmp(var, "chunk-time-sec")) {
+                if(val) globals.chunk_time_sec = atoi(val);
             } else if(!strcasecmp(var, "request-timeout")) {
                 if(val) globals.request_timeout = atoi(val);
             } else if(!strcasecmp(var, "connect-timeout")) {
@@ -526,18 +556,17 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     }
 
     if(!globals.api_url) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invalid parameter: api-url\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing required parameter: api-url\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
     if(!globals.api_key) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invalid parameter: api-key\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing required parameter: api-key\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
-    globals.opt_encoding = (globals.opt_encoding ?  globals.opt_encoding : "mp3");
-    globals.chunk_size_sec = (globals.chunk_size_sec > DEF_CHUNK_SZ_SEC ? globals.chunk_size_sec : DEF_CHUNK_SZ_SEC);
+    globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "mp3";
+    globals.chunk_time_sec = globals.chunk_time_sec > DEF_CHUNK_TIME_SEC ? globals.chunk_time_sec : DEF_CHUNK_TIME_SEC;
 
-    // -------------------------
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
 
     asr_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ASR_INTERFACE);
@@ -556,7 +585,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     asr_interface->asr_load_grammar = asr_load_grammar;
     asr_interface->asr_unload_grammar = asr_unload_grammar;
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "OpenAI-ASR (%s)\n", VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "OpenAI-ASR (%s)\n", MOD_VERSION);
 out:
     if(xml) {
         switch_xml_free(xml);
@@ -565,16 +594,16 @@ out:
 }
 
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_openai_asr_shutdown) {
-    uint8_t fl_wloop = true;
+    uint8_t fl_wloop = SWITCH_TRUE;
 
-    globals.fl_shutdown = true;
+    globals.fl_shutdown = SWITCH_TRUE;
 
     switch_mutex_lock(globals.mutex);
     fl_wloop = (globals.active_threads > 0);
     switch_mutex_unlock(globals.mutex);
 
     if(fl_wloop) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Waiting for termination '%d' threads...\n", globals.active_threads);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Waiting for termination (%d) threads...\n", globals.active_threads);
         while(fl_wloop) {
             switch_mutex_lock(globals.mutex);
             fl_wloop = (globals.active_threads > 0);
