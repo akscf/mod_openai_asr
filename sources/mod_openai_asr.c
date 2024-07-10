@@ -26,12 +26,11 @@
  */
 #include "mod_openai_asr.h"
 
-static globals_t globals;
+globals_t globals;
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_openai_asr_shutdown);
 SWITCH_MODULE_DEFINITION(mod_openai_asr, mod_openai_asr_load, mod_openai_asr_shutdown, NULL);
-
 
 static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void *obj) {
     volatile asr_ctx_t *_ref = (asr_ctx_t *)obj;
@@ -41,8 +40,10 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
     switch_buffer_t *curl_recv_buffer = NULL;
     switch_memory_pool_t *pool = NULL;
     cJSON *json = NULL;
+    time_t sentence_timeout = 0;
+    uint32_t schunks = 0;
     uint32_t chunk_buffer_size = 0;
-    uint8_t fl_do_transcript = SWITCH_FALSE;
+    uint8_t fl_cbuff_overflow = SWITCH_FALSE;
     void *pop = NULL;
 
     switch_mutex_lock(asr_ctx->mutex);
@@ -53,7 +54,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "switch_core_new_memory_pool()\n");
         goto out;
     }
-    if(switch_buffer_create_dynamic(&curl_recv_buffer, 1024, 4096, 8192) != SWITCH_STATUS_SUCCESS) {
+    if(switch_buffer_create_dynamic(&curl_recv_buffer, 1024, 2048, 4096) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_buffer_create_dynamic()\n");
         goto out;
     }
@@ -77,7 +78,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
             goto timer_next;
         }
 
-        fl_do_transcript = SWITCH_FALSE;
+        fl_cbuff_overflow = SWITCH_FALSE;
         while(switch_queue_trypop(asr_ctx->q_audio, &pop) == SWITCH_STATUS_SUCCESS) {
             xdata_buffer_t *audio_buffer = (xdata_buffer_t *)pop;
             if(globals.fl_shutdown || asr_ctx->fl_destroyed ) {
@@ -86,17 +87,24 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
             }
             if(audio_buffer && audio_buffer->len) {
                 if(switch_buffer_write(chunk_buffer, audio_buffer->data, audio_buffer->len) >= chunk_buffer_size) {
-                    fl_do_transcript = SWITCH_TRUE;
+                    fl_cbuff_overflow = SWITCH_TRUE;
                     break;
                 }
+                schunks++;
             }
             xdata_buffer_free(&audio_buffer);
         }
-        if(!fl_do_transcript) {
-            fl_do_transcript = (switch_buffer_inuse(chunk_buffer) > 0 && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING);
+
+        if(fl_cbuff_overflow) {
+            sentence_timeout = 1;
+        }
+        if(schunks && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
+            if(!sentence_timeout) {
+                sentence_timeout = globals.sentence_threshold_sec + switch_epoch_time_now(NULL);
+            }
         }
 
-        if(fl_do_transcript) {
+        if(sentence_timeout && sentence_timeout <= switch_epoch_time_now(NULL)) {
             const void *chunk_buffer_ptr = NULL;
             const void *http_response_ptr = NULL;
             uint32_t buf_len = 0, http_recv_len = 0;
@@ -104,56 +112,55 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
 
             if((buf_len = switch_buffer_peek_zerocopy(chunk_buffer, &chunk_buffer_ptr)) > 0 && chunk_buffer_ptr) {
                 chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
-                if(chunk_fname) {
-                    switch_buffer_zero(curl_recv_buffer);
-
-                    status = curl_perform(curl_recv_buffer, (char *)(asr_ctx->opt_model ? asr_ctx->opt_model : globals.opt_model), chunk_fname, &globals);
-                    http_recv_len = switch_buffer_peek_zerocopy(curl_recv_buffer, &http_response_ptr);
-
-                    if(status == SWITCH_STATUS_SUCCESS) {
-                        if(http_response_ptr && http_recv_len) {
-                            if((json = cJSON_Parse((char *)http_response_ptr)) != NULL) {
-                                cJSON *jres = cJSON_GetObjectItem(json, "error");
-                                if(jres) {
-                                    if(globals.fl_log_http_errors) { switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: %s\n", (char *)http_response_ptr); }
-                                    status = SWITCH_STATUS_FALSE;
-                                } else {
-                                    cJSON *jres = cJSON_GetObjectItem(json, "text");
-                                    if(jres) {
-                                        xdata_buffer_t *tbuff = NULL;
-                                        if(xdata_buffer_alloc(&tbuff, (switch_byte_t *)jres->valuestring, strlen(jres->valuestring)) == SWITCH_STATUS_SUCCESS) {
-                                            if(switch_queue_trypush(asr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
-                                                switch_mutex_lock(asr_ctx->mutex);
-                                                asr_ctx->transcription_results++;
-                                                switch_mutex_unlock(asr_ctx->mutex);
-                                            } else {
-                                                xdata_buffer_free(&tbuff);
-                                            }
-                                        }
-                                    } else {
-                                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Malformed response: %s\n", (char *)http_response_ptr);
-                                        status = SWITCH_STATUS_FALSE;
-                                    }
-                                }
-                            }
-                        }
-                        if(json) {
-                            cJSON_Delete(json);
-                            json = NULL;
-                        }
-                    } else {
-                        if(globals.fl_log_http_errors && http_recv_len) {
-                            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: %s\n", (char *)http_response_ptr);
-                        }
-                    }
-
-                }
             }
             if(chunk_fname) {
+                switch_buffer_zero(curl_recv_buffer);
+
+                status = curl_perform(curl_recv_buffer, (char *)(asr_ctx->opt_model ? asr_ctx->opt_model : globals.opt_model), chunk_fname, &globals);
+                http_recv_len = switch_buffer_peek_zerocopy(curl_recv_buffer, &http_response_ptr);
+                if(status == SWITCH_STATUS_SUCCESS) {
+                    if(http_response_ptr && http_recv_len) {
+                        if((json = cJSON_Parse((char *)http_response_ptr))) {
+                            cJSON *jres = cJSON_GetObjectItem(json, "error");
+                            if(jres) {
+                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: %s\n", (char *)http_response_ptr);
+                            } else {
+                                cJSON *jres = cJSON_GetObjectItem(json, "text");
+                                if(jres) {
+                                    xdata_buffer_t *tbuff = NULL;
+                                    if(xdata_buffer_alloc(&tbuff, (switch_byte_t *)jres->valuestring, strlen(jres->valuestring)) == SWITCH_STATUS_SUCCESS) {
+                                        if(switch_queue_trypush(asr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
+                                            switch_mutex_lock(asr_ctx->mutex);
+                                            asr_ctx->transcription_results++;
+                                            switch_mutex_unlock(asr_ctx->mutex);
+                                        } else {
+                                            xdata_buffer_free(&tbuff);
+                                        }
+                                    }
+                                } else {
+                                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Malformed response: (%s)\n", (char *)http_response_ptr);
+                                }
+                            }
+                        } else {
+                            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to parse json (%s)\n", (char *)http_response_ptr);
+                        }
+                    } else {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response is empty!\n");
+                    }
+                } else {
+                    if(globals.fl_log_http_errors && http_recv_len) {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: (%s)\n", (char *)http_response_ptr);
+                    } else {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to perform request (status=%d)\n", (int)status);
+                    }
+                }
+
+                schunks = 0;
+                sentence_timeout = 0;
                 unlink(chunk_fname);
                 switch_safe_free(chunk_fname);
+                switch_buffer_zero(chunk_buffer);
             }
-            switch_buffer_zero(chunk_buffer);
         }
 
         timer_next:
@@ -312,7 +319,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         switch_mutex_lock(asr_ctx->mutex);
         asr_ctx->frame_len = data_len;
         asr_ctx->vad_buffer_size = asr_ctx->frame_len * VAD_STORE_FRAMES;
-        asr_ctx->chunk_buffer_size = asr_ctx->samplerate * globals.chunk_time_sec;
+        asr_ctx->chunk_buffer_size = asr_ctx->samplerate * globals.sentence_max_sec;
         switch_mutex_unlock(asr_ctx->mutex);
 
         if(switch_buffer_create(ah->memory_pool, &asr_ctx->vad_buffer, asr_ctx->vad_buffer_size) != SWITCH_STATUS_SUCCESS) {
@@ -321,7 +328,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         }
     }
 
-    if(globals.fl_vad_enabled && asr_ctx->vad_buffer_size) {
+    if(asr_ctx->vad_buffer_size) {
         if(asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING || (asr_ctx->vad_state == vad_state && vad_state == SWITCH_VAD_STATE_NONE)) {
             if(data_len <= asr_ctx->frame_len) {
                 if(asr_ctx->vad_stored_frames >= VAD_STORE_FRAMES) {
@@ -388,7 +395,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
                     tau_buf->len = (rlen + data_len);
                     switch_malloc(tau_buf->data, tau_buf->len);
 
-                    memcpy(tau_buf->data, (void *)ptr, rlen);
+                    memcpy(tau_buf->data, (void *)(ptr + ofs), rlen);
                     memcpy(tau_buf->data + rlen, data, data_len);
 
                     if(switch_queue_trypush(asr_ctx->q_audio, tau_buf) != SWITCH_STATUS_SUCCESS) {
@@ -525,8 +532,6 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.vad_voice_ms = atoi (val);
             } else if(!strcasecmp(var, "vad-threshold")) {
                 if(val) globals.vad_threshold = atoi (val);
-            } else if(!strcasecmp(var, "vad-enable")) {
-                if(val) globals.fl_vad_enabled = switch_true(val);
             } else if(!strcasecmp(var, "vad-debug")) {
                 if(val) globals.fl_vad_debug = switch_true(val);
             } else if(!strcasecmp(var, "api-key")) {
@@ -543,8 +548,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.opt_encoding = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "model")) {
                 if(val) globals.opt_model= switch_core_strdup(pool, val);
-            } else if(!strcasecmp(var, "chunk-time-sec")) {
-                if(val) globals.chunk_time_sec = atoi(val);
+            } else if(!strcasecmp(var, "sentence-max-sec")) {
+                if(val) globals.sentence_max_sec = atoi(val);
+            } else if(!strcasecmp(var, "sentence-threshold-sec")) {
+                if(val) globals.sentence_threshold_sec = atoi(val);
             } else if(!strcasecmp(var, "request-timeout")) {
                 if(val) globals.request_timeout = atoi(val);
             } else if(!strcasecmp(var, "connect-timeout")) {
@@ -564,11 +571,15 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
-    globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "mp3";
-    globals.chunk_time_sec = globals.chunk_time_sec > DEF_CHUNK_TIME_SEC ? globals.chunk_time_sec : DEF_CHUNK_TIME_SEC;
+    globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "wav";
+    globals.sentence_max_sec = globals.sentence_max_sec > DEF_SENTENCE_MAX_TIME ? globals.sentence_max_sec : DEF_SENTENCE_MAX_TIME;
+
+    globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-cache", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
+    if(switch_directory_exists(globals.tmp_path, NULL) != SWITCH_STATUS_SUCCESS) {
+        switch_dir_make(globals.tmp_path, SWITCH_FPROT_OS_DEFAULT, NULL);
+    }
 
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
-
     asr_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ASR_INTERFACE);
     asr_interface->interface_name = "openai";
     asr_interface->asr_open = asr_open;

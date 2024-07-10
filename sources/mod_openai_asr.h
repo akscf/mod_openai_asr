@@ -30,25 +30,26 @@
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
 #define MOD_CONFIG_NAME         "openai_asr.conf"
-#define MOD_VERSION             "1.0_apiv1"
+#define MOD_VERSION             "1.0.1"
 #define QUEUE_SIZE              128
 #define VAD_STORE_FRAMES        64
-#define VAD_RECOVERY_FRAMES     15
-#define DEF_CHUNK_TIME_SEC      15
+#define VAD_RECOVERY_FRAMES     20
+#define DEF_SENTENCE_MAX_TIME   15
 
 typedef struct {
     switch_mutex_t          *mutex;
     uint32_t                active_threads;
-    uint32_t                chunk_time_sec;
+    uint32_t                sentence_max_sec;
+    uint32_t                sentence_threshold_sec;
     uint32_t                vad_silence_ms;
     uint32_t                vad_voice_ms;
     uint32_t                vad_threshold;
     uint32_t                request_timeout;    // seconds
     uint32_t                connect_timeout;    // seconds
     uint8_t                 fl_vad_debug;
-    uint8_t                 fl_vad_enabled;
     uint8_t                 fl_shutdown;
     uint8_t                 fl_log_http_errors;
+    char                    *tmp_path;
     const char              *api_key;
     const char              *api_url;
     const char              *user_agent;
@@ -89,15 +90,14 @@ typedef struct {
 } xdata_buffer_t;
 
 /* curl.c */
-switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *chunk_file, globals_t *globals);
+switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *filename, globals_t *globals);
 
 /* utils.c */
+char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext);
 switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len);
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
 void xdata_buffer_free(xdata_buffer_t **buf);
 void xdata_buffer_queue_clean(switch_queue_t *queue);
-
-char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext);
 
 
 #endif

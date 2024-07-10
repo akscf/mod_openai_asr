@@ -32,7 +32,7 @@ static size_t curl_io_write_callback(char *buffer, size_t size, size_t nitems, v
     return len;
 }
 
-switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *chunk_file, globals_t *globals) {
+switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *filename, globals_t *globals) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
     CURL *curl_handle = NULL;
     curl_mime *form = NULL;
@@ -84,7 +84,7 @@ switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, cha
         }
         if((field2 = curl_mime_addpart(form))) {
             curl_mime_name(field2, "file");
-            curl_mime_filedata(field2, chunk_file);
+            curl_mime_filedata(field2, filename);
         }
         switch_curl_easy_setopt(curl_handle, CURLOPT_MIMEPOST, form);
     }
