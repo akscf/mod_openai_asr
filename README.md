@@ -1,5 +1,5 @@
 <p>
-  Provides an OpenAI Speech-To-Text features for the Freeswitch. <br>
+  Provides the ability to use OpenAI Speech-To-Text service in the Freeswitch. <br>
   Also capable to work with <a href="https://github.com/akscf/whisperd target="_blank">whisperd</a>
 </p>
 

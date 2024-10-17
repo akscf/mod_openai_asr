@@ -18,10 +18,11 @@
  *  Konstantin Alexandrin <akscfx@gmail.com>
  *
  *
- * mod_openai_asr.c -- openai speech-to-text service interface
- *
- * Provides OpenAI STT service for the Freeswitch.
+ * Provides the ability to use OpenAI Speech-To-Text service in the Freeswitch.
  * https://platform.openai.com/docs/guides/speech-to-text
+ *
+ * Development respository: 
+ * https://github.com/akscf/mod_openai_asr
  *
  */
 #include "mod_openai_asr.h"
