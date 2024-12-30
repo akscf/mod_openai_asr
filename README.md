@@ -2,6 +2,10 @@
   Provides the ability to use OpenAI Speech-To-Text service in the Freeswitch. <br>
   Also capable to work with <a href="https://github.com/akscf/whisperd target="_blank">whisperd</a>
 </p>
+<p>
+UPD 30-12-2024: <br>
+  seems the issue with noises after playback done (play_and_detect_speech) has been fixed in Freeswitch 1.10.10+ (at least in my case)
+</p>
 
 ### Usage example
 ```XML
