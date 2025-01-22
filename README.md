@@ -3,6 +3,10 @@
   Also capable to work with <a href="https://github.com/akscf/whisperd target="_blank">whisperd</a>
 </p>
 <p>
+If you have problems with building this module, pay attention to this 
+  <a href="https://github.com/akscf/mod_openai_asr/issues/1">issue</a> and <a href="https://github.com/akscf/mod_openai_asr/issues/1#issuecomment-2339346528"> the comment</a>, 
+  maybe you faced the same thing.
+<br><br>
 UPD 30-12-2024: <br>
   seems the issue with noises after playback done (play_and_detect_speech) has been fixed in Freeswitch 1.10.10+ (at least in my case)
 </p>
