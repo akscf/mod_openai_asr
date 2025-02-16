@@ -30,7 +30,7 @@
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
 #define MOD_CONFIG_NAME         "openai_asr.conf"
-#define MOD_VERSION             "1.0.1"
+#define MOD_VERSION             "1.0.2"
 #define QUEUE_SIZE              128
 #define VAD_STORE_FRAMES        64
 #define VAD_RECOVERY_FRAMES     20
@@ -50,13 +50,13 @@ typedef struct {
     uint8_t                 fl_shutdown;
     uint8_t                 fl_log_http_errors;
     char                    *tmp_path;
-    const char              *api_key;
-    const char              *api_url;
-    const char              *user_agent;
-    const char              *proxy;
-    const char              *proxy_credentials;
-    const char              *opt_encoding;
-    const char              *opt_model;
+    char                    *api_key;
+    char                    *api_url;
+    char                    *user_agent;
+    char                    *proxy;
+    char                    *proxy_credentials;
+    char                    *opt_encoding;
+    char                    *opt_model;
 } globals_t;
 
 typedef struct {
@@ -82,6 +82,7 @@ typedef struct {
     uint8_t                 fl_abort;
     char                    *opt_lang;
     char                    *opt_model;
+    char                    *opt_api_key;
 } asr_ctx_t;
 
 typedef struct {
@@ -90,7 +91,7 @@ typedef struct {
 } xdata_buffer_t;
 
 /* curl.c */
-switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *filename, globals_t *globals);
+switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *api_key, char *model_name, char *filename, globals_t *globals);
 
 /* utils.c */
 char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext);
@@ -98,6 +99,6 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
 void xdata_buffer_free(xdata_buffer_t **buf);
 void xdata_buffer_queue_clean(switch_queue_t *queue);
-
+char *parse_response(char *data, switch_stream_handle_t *stream);
 
 #endif

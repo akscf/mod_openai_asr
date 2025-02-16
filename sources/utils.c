@@ -104,3 +104,34 @@ out:
 
     return file_name;
 }
+
+char *parse_response(char *data, switch_stream_handle_t *stream) {
+    char *result = NULL;
+    cJSON *json = NULL;
+
+    if(!data) {
+        return NULL;
+    }
+
+    if(!(json = cJSON_Parse(data))) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to parse json (%s)\n", data);
+        if(stream) stream->write_function(stream, "-ERR: Unable to parse json (see log)\n");
+    } else {
+        cJSON *jres = cJSON_GetObjectItem(json, "error");
+        if(jres) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service returns error (%s)\n", data);
+            if(stream) stream->write_function(stream, "-ERR: Service returns error (see log)\n");
+        } else {
+            cJSON *jres = cJSON_GetObjectItem(json, "text");
+            if(jres) {
+                result = strdup(jres->valuestring);
+            }
+        }
+    }
+
+    if(json) {
+        cJSON_Delete(json);
+    }
+
+    return result;
+}

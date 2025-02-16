@@ -1,13 +1,9 @@
 <p>
-  Provides the ability to use OpenAI Speech-To-Text service in the Freeswitch. <br>
-  Also capable to work with <a href="https://github.com/akscf/whisperd target="_blank">whisperd</a>
-</p>
-<p>
-UPD 30-12-2024: <br>
-  seems the issue with noises after playback done (play_and_detect_speech) has been fixed in Freeswitch 1.10.10+ (at least in my case)
+  OpenAI Speech-To-Text service for the Freeswitch. <br>
+  Available through: asr_interface, cammnad api <br>
 </p>
 
-### Usage example
+### Dialplan example
 ```XML
 <extension name="openai-asr">
   <condition field="destination_number" expression="^(3222)$">
@@ -18,4 +14,10 @@ UPD 30-12-2024: <br>
     <action application="hangup"/>
  </condition>
 </extension>
+```
+
+### Command line
+```
+freeswitch> openai_asr_transcribe /tmp/test.[wav|mp3] [key=altKey mode=altModel]
++OK: How old is the Brooklyn Bridge
 ```

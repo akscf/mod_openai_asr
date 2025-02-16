@@ -18,10 +18,10 @@
  *  Konstantin Alexandrin <akscfx@gmail.com>
  *
  *
- * Provides the ability to use OpenAI Speech-To-Text service in the Freeswitch.
+ * OpenAI Speech-To-Text service for the Freeswitch.
  * https://platform.openai.com/docs/guides/speech-to-text
  *
- * Development respository: 
+ * Development respository:
  * https://github.com/akscf/mod_openai_asr
  *
  */
@@ -55,7 +55,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "switch_core_new_memory_pool()\n");
         goto out;
     }
-    if(switch_buffer_create_dynamic(&curl_recv_buffer, 1024, 2048, 4096) != SWITCH_STATUS_SUCCESS) {
+    if(switch_buffer_create_dynamic(&curl_recv_buffer, 1024, 2048, 8192) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_buffer_create_dynamic()\n");
         goto out;
     }
@@ -117,43 +117,26 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
             if(chunk_fname) {
                 switch_buffer_zero(curl_recv_buffer);
 
-                status = curl_perform(curl_recv_buffer, (char *)(asr_ctx->opt_model ? asr_ctx->opt_model : globals.opt_model), chunk_fname, &globals);
+                status = curl_perform(curl_recv_buffer, asr_ctx->opt_api_key, asr_ctx->opt_model, chunk_fname, &globals);
                 http_recv_len = switch_buffer_peek_zerocopy(curl_recv_buffer, &http_response_ptr);
                 if(status == SWITCH_STATUS_SUCCESS) {
                     if(http_response_ptr && http_recv_len) {
-                        if((json = cJSON_Parse((char *)http_response_ptr))) {
-                            cJSON *jres = cJSON_GetObjectItem(json, "error");
-                            if(jres) {
-                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: %s\n", (char *)http_response_ptr);
+                        char *txt = parse_response((char *)http_response_ptr, NULL);
+                        if(txt) {
+                            if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
+                                switch_mutex_lock(asr_ctx->mutex);
+                                asr_ctx->transcription_results++;
+                                switch_mutex_unlock(asr_ctx->mutex);
                             } else {
-                                cJSON *jres = cJSON_GetObjectItem(json, "text");
-                                if(jres) {
-                                    xdata_buffer_t *tbuff = NULL;
-                                    if(xdata_buffer_alloc(&tbuff, (switch_byte_t *)jres->valuestring, strlen(jres->valuestring)) == SWITCH_STATUS_SUCCESS) {
-                                        if(switch_queue_trypush(asr_ctx->q_text, tbuff) == SWITCH_STATUS_SUCCESS) {
-                                            switch_mutex_lock(asr_ctx->mutex);
-                                            asr_ctx->transcription_results++;
-                                            switch_mutex_unlock(asr_ctx->mutex);
-                                        } else {
-                                            xdata_buffer_free(&tbuff);
-                                        }
-                                    }
-                                } else {
-                                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Malformed response: (%s)\n", (char *)http_response_ptr);
-                                }
+                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
+                                switch_safe_free(txt);
                             }
-                        } else {
-                            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to parse json (%s)\n", (char *)http_response_ptr);
                         }
                     } else {
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response is empty!\n");
                     }
                 } else {
-                    if(globals.fl_log_http_errors && http_recv_len) {
-                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response: (%s)\n", (char *)http_response_ptr);
-                    } else {
-                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to perform request (status=%d)\n", (int)status);
-                    }
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to perform request!\n");
                 }
 
                 schunks = 0;
@@ -213,6 +196,9 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->chunk_buffer_size = 0;
     asr_ctx->samplerate = samplerate;
     asr_ctx->channels = 1;
+
+    asr_ctx->opt_model = globals.opt_model;
+    asr_ctx->opt_api_key = globals.api_key;
 
    if((status = switch_mutex_init(&asr_ctx->mutex, SWITCH_MUTEX_NESTED, ah->memory_pool)) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_mutex_init()\n");
@@ -425,26 +411,23 @@ static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_fla
 
 static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, switch_asr_flag_t *flags) {
     asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
-    char *result = NULL;
+    switch_status_t status = SWITCH_STATUS_FALSE;
     void *pop = NULL;
 
     assert(asr_ctx != NULL);
 
     if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
-        xdata_buffer_t *tbuff = (xdata_buffer_t *)pop;
-        if(tbuff->len > 0) {
-            switch_zmalloc(result, tbuff->len + 1);
-            memcpy(result, tbuff->data, tbuff->len);
-        }
-        xdata_buffer_free(&tbuff);
+        if(pop) {
+            *xmlstr = (char *)pop;
+            status = SWITCH_STATUS_SUCCESS;
 
-        switch_mutex_lock(asr_ctx->mutex);
-        if(asr_ctx->transcription_results > 0) asr_ctx->transcription_results--;
-        switch_mutex_unlock(asr_ctx->mutex);
+            switch_mutex_lock(asr_ctx->mutex);
+            if(asr_ctx->transcription_results > 0) asr_ctx->transcription_results--;
+            switch_mutex_unlock(asr_ctx->mutex);
+        }
     }
 
-    *xmlstr = result;
-    return (result ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
+    return status;
 }
 
 static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
@@ -488,8 +471,9 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
         if(val) asr_ctx->opt_lang = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "model") == 0) {
         if(val) asr_ctx->opt_model = switch_core_strdup(ah->memory_pool, val);
+    } else if(strcasecmp(param, "key") == 0) {
+        if(val) asr_ctx->opt_api_key = switch_core_strdup(ah->memory_pool, val);
     }
-
 }
 
 static void asr_numeric_param(switch_asr_handle_t *ah, char *param, int val) {
@@ -507,11 +491,95 @@ static switch_status_t asr_unload_grammar(switch_asr_handle_t *ah, const char *n
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
+#define CMD_SYNTAX "fileToTranscribe.(mp3|wav) [key=altkey model=altModel]\n"
+SWITCH_STANDARD_API(openai_asr_cmd_handler) {
+    switch_status_t status = 0;
+    char *mycmd = NULL, *argv[10] = { 0 }; int argc = 0;
+    switch_buffer_t *recv_buf = NULL;
+    const void *response_ptr = NULL;
+    char *opt_api_key = globals.api_key;
+    char *opt_model = globals.opt_model;
+    char *file_name = NULL, *file_ext = NULL;
+    uint32_t recv_len = 0;
+
+    if (!zstr(cmd)) {
+        mycmd = strdup(cmd);
+        switch_assert(mycmd);
+        argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
+    }
+    if(argc == 0) {
+        goto usage;
+    }
+
+    file_name = argv[0];
+    if(switch_file_exists(file_name, NULL) != SWITCH_STATUS_SUCCESS) {
+        stream->write_function(stream, "-ERR: file not found (%s)\n", file_name);
+        goto out;
+    }
+
+    file_ext = strrchr(file_name, '.');
+    if(!file_ext) {
+        stream->write_function(stream, "-ERR: unsupported file encoding (null)\n");
+        goto out;
+    }
+
+    file_ext++;
+    if(strcasecmp("mp3", file_ext) && strcasecmp("wav", file_ext)) {
+        stream->write_function(stream, "-ERR: unsupported file encoding (%s)\n", file_ext);
+        goto out;
+    }
+
+    if(switch_buffer_create_dynamic(&recv_buf, 1024, 2048, 8192) != SWITCH_STATUS_SUCCESS) {
+        stream->write_function(stream, "-ERR: switch_buffer_create_dynamic()\n");
+        goto out;
+    }
+
+    if(argc > 1) {
+        for(int i = 1; i < argc; i++) {
+            char *kvp[2] = { 0 };
+            if(switch_separate_string(argv[i], '=', kvp, 2) >= 2) {
+                if(strcasecmp(kvp[0], "key") == 0) {
+                    if(kvp[1]) opt_api_key = kvp[1];
+                } else if(strcasecmp(kvp[0], "model") == 0) {
+                    if(kvp[1]) opt_model = kvp[1];
+                }
+            }
+        }
+    }
+
+    status = curl_perform(recv_buf, opt_api_key, opt_model, file_name, &globals);
+
+    recv_len = switch_buffer_peek_zerocopy(recv_buf, &response_ptr);
+    if(status == SWITCH_STATUS_SUCCESS && response_ptr && recv_len) {
+        char *txt = parse_response((char *)response_ptr, stream);
+        if(txt) {
+            stream->write_function(stream, "+OK: %s\n", txt);
+        }
+        switch_safe_free(txt);
+    } else {
+        stream->write_function(stream, "-ERR: unable to perform request\n");
+    }
+
+    goto out;
+usage:
+    stream->write_function(stream, "-ERR:\nUsage: %s\n", CMD_SYNTAX);
+
+out:
+    if(recv_buf) {
+        switch_buffer_destroy(&recv_buf);
+    }
+
+    switch_safe_free(mycmd);
+    return SWITCH_STATUS_SUCCESS;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
     switch_xml_t cfg, xml, settings, param;
+    switch_api_interface_t *commands_interface;
     switch_asr_interface_t *asr_interface;
 
     memset(&globals, 0, sizeof(globals));
@@ -567,10 +635,6 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing required parameter: api-url\n");
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
-    if(!globals.api_key) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Missing required parameter: api-key\n");
-        switch_goto_status(SWITCH_STATUS_GENERR, out);
-    }
 
     globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "wav";
     globals.sentence_max_sec = globals.sentence_max_sec > DEF_SENTENCE_MAX_TIME ? globals.sentence_max_sec : DEF_SENTENCE_MAX_TIME;
@@ -581,6 +645,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     }
 
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
+    SWITCH_ADD_API(commands_interface, "openai_asr_transcribe", "OpenAI stt servive", openai_asr_cmd_handler, CMD_SYNTAX);
+
     asr_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ASR_INTERFACE);
     asr_interface->interface_name = "openai";
     asr_interface->asr_open = asr_open;

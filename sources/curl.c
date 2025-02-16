@@ -32,7 +32,7 @@ static size_t curl_io_write_callback(char *buffer, size_t size, size_t nitems, v
     return len;
 }
 
-switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, char *filename, globals_t *globals) {
+switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *api_key, char *model_name, char *filename, globals_t *globals) {
     switch_status_t status = SWITCH_STATUS_SUCCESS;
     CURL *curl_handle = NULL;
     curl_mime *form = NULL;
@@ -74,8 +74,10 @@ switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *model_name, cha
         switch_curl_easy_setopt(curl_handle, CURLOPT_PROXY, globals->proxy);
     }
 
-    curl_easy_setopt(curl_handle, CURLOPT_XOAUTH2_BEARER, globals->api_key);
-    curl_easy_setopt(curl_handle, CURLOPT_HTTPAUTH, CURLAUTH_BEARER);
+    if(api_key) {
+        curl_easy_setopt(curl_handle, CURLOPT_XOAUTH2_BEARER, api_key);
+        curl_easy_setopt(curl_handle, CURLOPT_HTTPAUTH, CURLAUTH_BEARER);
+    }
 
     if((form = curl_mime_init(curl_handle))) {
         if((field1 = curl_mime_addpart(form))) {
