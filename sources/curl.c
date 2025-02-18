@@ -94,6 +94,10 @@ switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *api_key, char *
     headers = switch_curl_slist_append(headers, "Expect:");
     switch_curl_easy_setopt(curl_handle, CURLOPT_URL, globals->api_url);
 
+#ifdef MOD_OPENAI_ASR_DEBUG
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Performing request [%s / %s]\n", model_name, filename);
+#endif // MOD_CURL_ASR_DEBUG
+
     curl_ret = switch_curl_easy_perform(curl_handle);
     if(!curl_ret) {
         switch_curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &http_resp);

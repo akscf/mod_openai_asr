@@ -36,6 +36,8 @@
 #define VAD_RECOVERY_FRAMES     20
 #define DEF_SENTENCE_MAX_TIME   15
 
+//#define MOD_OPENAI_ASR_DEBUG
+
 typedef struct {
     switch_mutex_t          *mutex;
     uint32_t                active_threads;

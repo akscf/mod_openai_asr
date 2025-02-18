@@ -122,6 +122,11 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
                 if(status == SWITCH_STATUS_SUCCESS) {
                     if(http_response_ptr && http_recv_len) {
                         char *txt = parse_response((char *)http_response_ptr, NULL);
+#ifdef MOD_OPENAI_ASR_DEBUG
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Service response [%s]\n", (char *)http_response_ptr);
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Text [%s]\n", txt ? txt : "null");
+#endif // MOD_CURL_ASR_DEBUG
+
                         if(txt) {
                             if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
                                 switch_mutex_lock(asr_ctx->mutex);
@@ -419,6 +424,10 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
     if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
         if(pop) {
             *xmlstr = (char *)pop;
+#ifdef MOD_OPENAI_ASR_DEBUG
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Return text [%s]\n", pop ? (char *)pop : "null");
+#endif // MOD_CURL_ASR_DEBUG
+
             status = SWITCH_STATUS_SUCCESS;
 
             switch_mutex_lock(asr_ctx->mutex);
