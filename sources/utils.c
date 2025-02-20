@@ -105,6 +105,18 @@ out:
     return file_name;
 }
 
+void text_queue_clean(switch_queue_t *queue) {
+    void *data = NULL;
+
+    if(!queue || !switch_queue_size(queue)) {
+        return;
+    }
+
+    while(switch_queue_trypop(queue, (void *)&data) == SWITCH_STATUS_SUCCESS) {
+        switch_safe_free(data);
+    }
+}
+
 char *parse_response(char *data, switch_stream_handle_t *stream) {
     char *result = NULL;
     cJSON *json = NULL;

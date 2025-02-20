@@ -25,8 +25,9 @@ freeswitch> openai_asr_transcribe /tmp/test.[wav|mp3] [key=altKey mode=altModel]
 
 ### mod_quickjs example
 ```javascript
+session.ttsEngine= 'openai';
 session.asrEngine= 'openai';
 
-var txt = session.playAndDetectSpeech('conference/8000/conf-welcome.wav');
+var txt = session.sayAndDetectSpeech('Hello, how can I halp you?', 10);
 consoleLog('info', "TEXT: " + txt);
 ```

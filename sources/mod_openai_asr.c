@@ -125,7 +125,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
 #ifdef MOD_OPENAI_ASR_DEBUG
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Service response [%s]\n", (char *)http_response_ptr);
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Text [%s]\n", txt ? txt : "null");
-#endif // MOD_CURL_ASR_DEBUG
+#endif
 
                         if(txt) {
                             if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
@@ -272,7 +272,7 @@ static switch_status_t asr_close(switch_asr_handle_t *ah, switch_asr_flag_t *fla
         switch_queue_term(asr_ctx->q_audio);
     }
     if(asr_ctx->q_text) {
-        xdata_buffer_queue_clean(asr_ctx->q_text);
+        text_queue_clean(asr_ctx->q_text);
         switch_queue_term(asr_ctx->q_text);
     }
     if(asr_ctx->vad) {
@@ -350,6 +350,8 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
+        asr_ctx->input_expiry = 0; // because we've already have audio chunks
+
         if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_stored_frames > 0) {
             xdata_buffer_t *tau_buf = NULL;
             const void *ptr = NULL;
@@ -411,6 +413,10 @@ static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_fla
 
     assert(asr_ctx != NULL);
 
+    if(asr_ctx->input_expiry > 0 && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
+        return SWITCH_STATUS_SUCCESS;
+    }
+
     return (asr_ctx->transcription_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
 }
 
@@ -421,13 +427,22 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
 
     assert(asr_ctx != NULL);
 
+    if(asr_ctx->input_expiry > 0 && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
+#ifdef MOD_OPENAI_ASR_DEBUG
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Input timeout\n");
+#endif
+
+        *xmlstr = NULL;
+        return SWITCH_STATUS_TIMEOUT;
+    }
+
     if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
         if(pop) {
-            *xmlstr = (char *)pop;
 #ifdef MOD_OPENAI_ASR_DEBUG
             switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Return text [%s]\n", pop ? (char *)pop : "null");
-#endif // MOD_CURL_ASR_DEBUG
+#endif
 
+            *xmlstr = (char *)pop;
             status = SWITCH_STATUS_SUCCESS;
 
             switch_mutex_lock(asr_ctx->mutex);
@@ -443,6 +458,10 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
     asr_ctx_t *asr_ctx = (asr_ctx_t *)ah->private_info;
 
     assert(asr_ctx != NULL);
+
+    if(asr_ctx->input_timeout > 0) {
+        asr_ctx->input_expiry = asr_ctx->input_timeout + switch_epoch_time_now(NULL);
+    }
 
     return SWITCH_STATUS_SUCCESS;
 }
@@ -482,6 +501,8 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
         if(val) asr_ctx->opt_model = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "key") == 0) {
         if(val) asr_ctx->opt_api_key = switch_core_strdup(ah->memory_pool, val);
+    } else if(strcasecmp(param, "timeout") == 0) {
+        if(val) asr_ctx->input_timeout = atoi(val);
     }
 }
 
