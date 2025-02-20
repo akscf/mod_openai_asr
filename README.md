@@ -17,9 +17,16 @@
  </condition>
 </extension>
 ```
-
 ### Command line
 ```
 freeswitch> openai_asr_transcribe /tmp/test.[wav|mp3] [key=altKey mode=altModel]
 +OK: How old is the Brooklyn Bridge
+```
+
+### mod_quickjs example
+```javascript
+session.asrEngine= 'curl';
+
+var txt = session.playAndDetectSpeech('conference/8000/conf-welcome.wav');
+consoleLog('info', "TEXT: " + txt);
 ```
