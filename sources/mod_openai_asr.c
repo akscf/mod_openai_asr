@@ -350,7 +350,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
-        asr_ctx->input_expiry = 0; // because we've already have audio chunks
+        asr_ctx->input_expiry = 0;
 
         if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_stored_frames > 0) {
             xdata_buffer_t *tau_buf = NULL;
@@ -413,7 +413,11 @@ static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_fla
 
     assert(asr_ctx != NULL);
 
-    if(asr_ctx->input_expiry > 0 && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
+    if(asr_ctx->fl_pause) {
+        return SWITCH_STATUS_FALSE;
+    }
+
+    if(asr_ctx->input_expiry && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
         return SWITCH_STATUS_SUCCESS;
     }
 
@@ -432,8 +436,8 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Input timeout\n");
 #endif
 
-        *xmlstr = NULL;
-        return SWITCH_STATUS_TIMEOUT;
+        *xmlstr = strdup("[input timeout]");
+        return SWITCH_STATUS_SUCCESS;
     }
 
     if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
@@ -459,9 +463,8 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    if(asr_ctx->input_timeout > 0) {
-        asr_ctx->input_expiry = asr_ctx->input_timeout + switch_epoch_time_now(NULL);
-    }
+    asr_ctx->input_expiry = asr_ctx->input_timeout ? asr_ctx->input_timeout + switch_epoch_time_now(NULL) : 0;
+    asr_ctx->fl_start_timers = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
 }
@@ -471,9 +474,8 @@ static switch_status_t asr_pause(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    if(!asr_ctx->fl_pause) {
-        asr_ctx->fl_pause = SWITCH_TRUE;
-    }
+    asr_ctx->input_expiry = 0;
+    asr_ctx->fl_pause = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
 }
@@ -483,9 +485,8 @@ static switch_status_t asr_resume(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    if(asr_ctx->fl_pause) {
-        asr_ctx->fl_pause = SWITCH_FALSE;
-    }
+    asr_ctx->input_expiry = 0;
+    asr_ctx->fl_pause = SWITCH_FALSE;
 
     return SWITCH_STATUS_SUCCESS;
 }

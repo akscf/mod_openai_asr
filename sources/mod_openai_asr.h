@@ -80,6 +80,7 @@ typedef struct {
     uint32_t                frame_len;
     uint32_t                input_timeout;
     uint32_t                input_expiry;
+    uint8_t                 fl_start_timers;
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_first_cycle;
     uint8_t                 fl_destroyed;
