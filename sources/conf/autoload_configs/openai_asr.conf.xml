@@ -13,8 +13,9 @@
    <!-- <param name="user-agent" value="Mozilla/1.0" /> -->
 
         <!-- capture settings -->
-        <param name="sentence-max-sec" value="15" />
-        <param name="sentence-threshold-sec" value="3" />
+        <param name="sentence-max-sec" value="45" />
+        <param name="sentence-silence-sec" value="3" />
+
         <param name="vad-debug" value="false" />
         <param name="vad-silence-ms" value="400" />
         <param name="vad-voice-ms" value="200" />

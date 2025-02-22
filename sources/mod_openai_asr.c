@@ -101,7 +101,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
         }
         if(schunks && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
             if(!sentence_timeout) {
-                sentence_timeout = globals.sentence_threshold_sec + switch_epoch_time_now(NULL);
+                sentence_timeout = asr_ctx->silence_sec + switch_epoch_time_now(NULL);
             }
         }
 
@@ -175,7 +175,7 @@ out:
     switch_mutex_unlock(asr_ctx->mutex);
 
     switch_mutex_lock(globals.mutex);
-    if(globals.active_threads > 0) { globals.active_threads--; }
+    if(globals.active_threads) globals.active_threads--;
     switch_mutex_unlock(globals.mutex);
 
     return NULL;
@@ -198,9 +198,10 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
         switch_goto_status(SWITCH_STATUS_GENERR, out);
     }
 
+    asr_ctx->channels = 1;
     asr_ctx->chunk_buffer_size = 0;
     asr_ctx->samplerate = samplerate;
-    asr_ctx->channels = 1;
+    asr_ctx->silence_sec = globals.sentence_silence_sec;
 
     asr_ctx->opt_model = globals.opt_model;
     asr_ctx->opt_api_key = globals.api_key;
@@ -504,6 +505,8 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
         if(val) asr_ctx->opt_api_key = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "timeout") == 0) {
         if(val) asr_ctx->input_timeout = atoi(val);
+    } else if(strcasecmp(param, "silence") == 0) {
+        if(val) asr_ctx->silence_sec = atoi(val);
     }
 }
 
@@ -522,7 +525,7 @@ static switch_status_t asr_unload_grammar(switch_asr_handle_t *ah, const char *n
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-#define CMD_SYNTAX "fileToTranscribe.(mp3|wav) [key=altkey model=altModel]\n"
+#define CMD_SYNTAX "path/to/filename.(mp3|wav) [key=altkey model=altModel]\n"
 SWITCH_STANDARD_API(openai_asr_cmd_handler) {
     switch_status_t status = 0;
     char *mycmd = NULL, *argv[10] = { 0 }; int argc = 0;
@@ -650,8 +653,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.opt_model= switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "sentence-max-sec")) {
                 if(val) globals.sentence_max_sec = atoi(val);
-            } else if(!strcasecmp(var, "sentence-threshold-sec")) {
-                if(val) globals.sentence_threshold_sec = atoi(val);
+            } else if(!strcasecmp(var, "sentence-silence-sec")) {
+                if(val) globals.sentence_silence_sec = atoi(val);
             } else if(!strcasecmp(var, "request-timeout")) {
                 if(val) globals.request_timeout = atoi(val);
             } else if(!strcasecmp(var, "connect-timeout")) {
@@ -668,15 +671,16 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     }
 
     globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "wav";
-    globals.sentence_max_sec = globals.sentence_max_sec > DEF_SENTENCE_MAX_TIME ? globals.sentence_max_sec : DEF_SENTENCE_MAX_TIME;
+    globals.sentence_max_sec = !globals.sentence_max_sec ? DEF_SENTENCE_MAX_TIME : globals.sentence_max_sec;
+    globals.sentence_silence_sec = !globals.sentence_silence_sec ? DEF_SENTENCE_SILENCE : globals.sentence_silence_sec;
 
-    globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-cache", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
+    globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-tmp", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
     if(switch_directory_exists(globals.tmp_path, NULL) != SWITCH_STATUS_SUCCESS) {
         switch_dir_make(globals.tmp_path, SWITCH_FPROT_OS_DEFAULT, NULL);
     }
 
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
-    SWITCH_ADD_API(commands_interface, "openai_asr_transcribe", "OpenAI stt servive", openai_asr_cmd_handler, CMD_SYNTAX);
+    SWITCH_ADD_API(commands_interface, "openai_asr_transcript", "OpenAI speech-to-text", openai_asr_cmd_handler, CMD_SYNTAX);
 
     asr_interface = switch_loadable_module_create_interface(*module_interface, SWITCH_ASR_INTERFACE);
     asr_interface->interface_name = "openai";
