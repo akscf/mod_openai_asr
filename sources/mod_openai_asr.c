@@ -98,10 +98,14 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
 
         if(fl_cbuff_overflow) {
             sentence_timeout = 1;
-        }
-        if(schunks && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
-            if(!sentence_timeout) {
-                sentence_timeout = asr_ctx->silence_sec + switch_epoch_time_now(NULL);
+        } else {
+            if(schunks && asr_ctx->vad_state == SWITCH_VAD_STATE_STOP_TALKING) {
+                if(!sentence_timeout) {
+                    sentence_timeout = asr_ctx->silence_sec + switch_epoch_time_now(NULL);
+                }
+            }
+            if(sentence_timeout && (asr_ctx->vad_state == SWITCH_VAD_STATE_START_TALKING || asr_ctx->vad_state == SWITCH_VAD_STATE_TALKING)) {
+                sentence_timeout = 0;
             }
         }
 
@@ -112,7 +116,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
             char *chunk_fname = NULL;
 
             if((buf_len = switch_buffer_peek_zerocopy(chunk_buffer, &chunk_buffer_ptr)) > 0 && chunk_buffer_ptr) {
-                chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
+                chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding, asr_ctx->alt_tmp_name);
             }
             if(chunk_fname) {
                 switch_buffer_zero(curl_recv_buffer);
@@ -146,7 +150,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
 
                 schunks = 0;
                 sentence_timeout = 0;
-                unlink(chunk_fname);
+                if(!asr_ctx->fl_keep_tmp) unlink(chunk_fname);
                 switch_safe_free(chunk_fname);
                 switch_buffer_zero(chunk_buffer);
             }
@@ -202,6 +206,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->chunk_buffer_size = 0;
     asr_ctx->samplerate = samplerate;
     asr_ctx->silence_sec = globals.sentence_silence_sec;
+    asr_ctx->fl_keep_tmp = SWITCH_FALSE;
 
     asr_ctx->opt_model = globals.opt_model;
     asr_ctx->opt_api_key = globals.api_key;
@@ -351,7 +356,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
-        asr_ctx->input_expiry = 0;
+        asr_ctx->speech_start_expiry = 0;
 
         if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_stored_frames > 0) {
             xdata_buffer_t *tau_buf = NULL;
@@ -418,7 +423,7 @@ static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_fla
         return SWITCH_STATUS_FALSE;
     }
 
-    if(asr_ctx->input_expiry && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
+    if(asr_ctx->speech_start_expiry && asr_ctx->speech_start_expiry <= switch_epoch_time_now(NULL)) {
         return SWITCH_STATUS_SUCCESS;
     }
 
@@ -432,12 +437,12 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
 
     assert(asr_ctx != NULL);
 
-    if(asr_ctx->input_expiry > 0 && asr_ctx->input_expiry <= switch_epoch_time_now(NULL)) {
+    if(asr_ctx->speech_start_expiry > 0 && asr_ctx->speech_start_expiry <= switch_epoch_time_now(NULL)) {
 #ifdef MOD_OPENAI_ASR_DEBUG
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Input timeout\n");
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Speech start timeout\n");
 #endif
 
-        *xmlstr = strdup("[input timeout]");
+        *xmlstr = strdup("[speech start timeout]");
         return SWITCH_STATUS_SUCCESS;
     }
 
@@ -464,7 +469,7 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->input_expiry = asr_ctx->input_timeout ? asr_ctx->input_timeout + switch_epoch_time_now(NULL) : 0;
+    asr_ctx->speech_start_expiry = asr_ctx->speech_start_timeout ? asr_ctx->speech_start_timeout + switch_epoch_time_now(NULL) : 0;
     asr_ctx->fl_start_timers = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -475,7 +480,7 @@ static switch_status_t asr_pause(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->input_expiry = 0;
+    asr_ctx->speech_start_expiry = 0;
     asr_ctx->fl_pause = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -486,7 +491,7 @@ static switch_status_t asr_resume(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->input_expiry = 0;
+    asr_ctx->speech_start_expiry = 0;
     asr_ctx->fl_pause = SWITCH_FALSE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -504,9 +509,13 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
     } else if(strcasecmp(param, "key") == 0) {
         if(val) asr_ctx->opt_api_key = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "timeout") == 0) {
-        if(val) asr_ctx->input_timeout = atoi(val);
+        if(val) asr_ctx->speech_start_timeout = atoi(val);
     } else if(strcasecmp(param, "silence") == 0) {
         if(val) asr_ctx->silence_sec = atoi(val);
+    } else if(strcasecmp(param, "keep-tmp") == 0) {
+        if(val) asr_ctx->fl_keep_tmp = switch_true(val);
+    } else if(strcasecmp(param, "tmp-name") == 0) {
+        if(val) asr_ctx->alt_tmp_name = switch_core_strdup(ah->memory_pool, val);
     }
 }
 
@@ -525,7 +534,7 @@ static switch_status_t asr_unload_grammar(switch_asr_handle_t *ah, const char *n
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-#define CMD_SYNTAX "path/to/filename.(mp3|wav) [key=altkey model=altModel]\n"
+#define CMD_SYNTAX "path_to/filename.(mp3|wav) [key=altkey model=altModel]\n"
 SWITCH_STANDARD_API(openai_asr_cmd_handler) {
     switch_status_t status = 0;
     char *mycmd = NULL, *argv[10] = { 0 }; int argc = 0;
@@ -674,7 +683,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     globals.sentence_max_sec = !globals.sentence_max_sec ? DEF_SENTENCE_MAX_TIME : globals.sentence_max_sec;
     globals.sentence_silence_sec = !globals.sentence_silence_sec ? DEF_SENTENCE_SILENCE : globals.sentence_silence_sec;
 
-    globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-tmp", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
+    globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-cache", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
     if(switch_directory_exists(globals.tmp_path, NULL) != SWITCH_STATUS_SUCCESS) {
         switch_dir_make(globals.tmp_path, SWITCH_FPROT_OS_DEFAULT, NULL);
     }

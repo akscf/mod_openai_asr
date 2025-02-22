@@ -71,6 +71,10 @@ typedef struct {
     switch_queue_t          *q_text;
     switch_buffer_t         *curl_recv_buffer_ref;
     switch_vad_state_t      vad_state;
+    char                    *opt_lang;
+    char                    *opt_model;
+    char                    *opt_api_key;
+    char                    *alt_tmp_name;
     int32_t                 transcription_results;
     uint32_t                vad_buffer_size;
     uint32_t                vad_stored_frames;
@@ -79,17 +83,15 @@ typedef struct {
     uint32_t                samplerate;
     uint32_t                channels;
     uint32_t                frame_len;
-    uint32_t                input_timeout;
-    uint32_t                input_expiry;
+    uint32_t                speech_start_timeout;
+    uint32_t                speech_start_expiry;
     uint32_t                silence_sec;
     uint8_t                 fl_start_timers;
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_first_cycle;
     uint8_t                 fl_destroyed;
     uint8_t                 fl_abort;
-    char                    *opt_lang;
-    char                    *opt_model;
-    char                    *opt_api_key;
+    uint8_t                 fl_keep_tmp;
 } asr_ctx_t;
 
 typedef struct {
@@ -101,7 +103,7 @@ typedef struct {
 switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *api_key, char *model_name, char *filename, globals_t *globals);
 
 /* utils.c */
-char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext);
+char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext, const char *alt_tmp_name);
 switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len);
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
 void xdata_buffer_free(xdata_buffer_t **buf);

@@ -71,7 +71,7 @@ switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, ui
     return SWITCH_STATUS_FALSE;
 }
 
-char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext) {
+char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext, const char *alt_tmp_name) {
     switch_status_t status = SWITCH_STATUS_FALSE;
     switch_size_t len = (buf_len / sizeof(int16_t));
     switch_file_handle_t fh = { 0 };
@@ -79,8 +79,16 @@ char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint3
     char name_uuid[SWITCH_UUID_FORMATTED_LENGTH + 1] = { 0 };
     int flags = (SWITCH_FILE_FLAG_WRITE | SWITCH_FILE_DATA_SHORT);
 
-    switch_uuid_str((char *)name_uuid, sizeof(name_uuid));
-    file_name = switch_mprintf("%s%s%s.%s", globals.tmp_path, SWITCH_PATH_SEPARATOR, name_uuid, (file_ext == NULL ? "wav" : file_ext) );
+    if(alt_tmp_name) {
+        file_name = strdup(alt_tmp_name);
+    } else {
+        switch_uuid_str((char *)name_uuid, sizeof(name_uuid));
+        file_name = switch_mprintf("%s%s%s.%s", globals.tmp_path, SWITCH_PATH_SEPARATOR, name_uuid, (file_ext == NULL ? "wav" : file_ext) );
+    }
+
+#ifdef MOD_OPENAI_ASR_DEBUG
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "chunk file: [%s]\n", file_name);
+#endif
 
     if((status = switch_core_file_open(&fh, file_name, channels, samplerate, flags, NULL)) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to open file (%s)\n", file_name);
