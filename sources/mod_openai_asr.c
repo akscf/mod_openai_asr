@@ -116,7 +116,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
             char *chunk_fname = NULL;
 
             if((buf_len = switch_buffer_peek_zerocopy(chunk_buffer, &chunk_buffer_ptr)) > 0 && chunk_buffer_ptr) {
-                chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding, asr_ctx->alt_tmp_name);
+                chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
             }
             if(chunk_fname) {
                 switch_buffer_zero(curl_recv_buffer);
@@ -130,8 +130,19 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Service response [%s]\n", (char *)http_response_ptr);
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Text [%s]\n", txt ? txt : "null");
 #endif
-
-                        if(txt) {
+                        if(asr_ctx->fl_js_out) {
+                            char *json = switch_mprintf("{\"chunks\":%d, \"duration\":%d, \"file\":\"%s\", \"text\":\"%s\"}", schunks, (uint32_t)(buf_len / asr_ctx->samplerate), chunk_fname, txt ? txt : "");
+                            if(switch_queue_trypush(asr_ctx->q_text, json) == SWITCH_STATUS_SUCCESS) {
+                                switch_mutex_lock(asr_ctx->mutex);
+                                asr_ctx->transcription_results++;
+                                switch_mutex_unlock(asr_ctx->mutex);
+                            } else {
+                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
+                                switch_safe_free(json);
+                            }
+                            switch_safe_free(txt);
+                        } else {
+                            if(!txt) txt = strdup("");
                             if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
                                 switch_mutex_lock(asr_ctx->mutex);
                                 asr_ctx->transcription_results++;
@@ -142,7 +153,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
                             }
                         }
                     } else {
-                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Service response is empty!\n");
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Empty service response!\n");
                     }
                 } else {
                     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to perform request!\n");
@@ -193,7 +204,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx_t *asr_ctx = NULL;
 
     if(strcmp(codec, "L16") !=0) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unsupported encoding: %s\n", codec);
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unsupported encoding (%s)\n", codec);
         switch_goto_status(SWITCH_STATUS_FALSE, out);
     }
 
@@ -502,7 +513,7 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
 
     assert(asr_ctx != NULL);
 
-    if(strcasecmp(param, "language") == 0) {
+    if(strcasecmp(param, "lang") == 0) {
         if(val) asr_ctx->opt_lang = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "model") == 0) {
         if(val) asr_ctx->opt_model = switch_core_strdup(ah->memory_pool, val);
@@ -514,8 +525,10 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
         if(val) asr_ctx->silence_sec = atoi(val);
     } else if(strcasecmp(param, "keep-tmp") == 0) {
         if(val) asr_ctx->fl_keep_tmp = switch_true(val);
-    } else if(strcasecmp(param, "tmp-name") == 0) {
-        if(val) asr_ctx->alt_tmp_name = switch_core_strdup(ah->memory_pool, val);
+    } else if(strcasecmp(param, "jsout") == 0) {
+        if(val) asr_ctx->fl_js_out = switch_true(val);
+    } else if(strcasecmp(param, "live") == 0) {
+        if(val) asr_ctx->fl_live_cap = switch_true(val);
     }
 }
 

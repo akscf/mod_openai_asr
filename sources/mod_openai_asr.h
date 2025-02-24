@@ -31,7 +31,7 @@
 
 #define MOD_CONFIG_NAME         "openai_asr.conf"
 #define MOD_VERSION             "1.0.3"
-#define QUEUE_SIZE              128
+#define QUEUE_SIZE              1024
 #define VAD_STORE_FRAMES        64
 #define VAD_RECOVERY_FRAMES     20
 #define DEF_SENTENCE_MAX_TIME   35
@@ -74,7 +74,6 @@ typedef struct {
     char                    *opt_lang;
     char                    *opt_model;
     char                    *opt_api_key;
-    char                    *alt_tmp_name;
     int32_t                 transcription_results;
     uint32_t                vad_buffer_size;
     uint32_t                vad_stored_frames;
@@ -92,6 +91,8 @@ typedef struct {
     uint8_t                 fl_destroyed;
     uint8_t                 fl_abort;
     uint8_t                 fl_keep_tmp;
+    uint8_t                 fl_js_out;
+    uint8_t                 fl_live_cap;
 } asr_ctx_t;
 
 typedef struct {
@@ -103,7 +104,7 @@ typedef struct {
 switch_status_t curl_perform(switch_buffer_t *recv_buffer, char *api_key, char *model_name, char *filename, globals_t *globals);
 
 /* utils.c */
-char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext, const char *alt_tmp_name);
+char *chunk_write(switch_byte_t *buf, uint32_t buf_len, uint32_t channels, uint32_t samplerate, const char *file_ext);
 switch_status_t xdata_buffer_push(switch_queue_t *queue, switch_byte_t *data, uint32_t data_len);
 switch_status_t xdata_buffer_alloc(xdata_buffer_t **out, switch_byte_t *data, uint32_t data_len);
 void xdata_buffer_free(xdata_buffer_t **buf);
