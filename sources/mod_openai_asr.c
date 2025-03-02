@@ -112,7 +112,7 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
         if(sentence_timeout && sentence_timeout <= switch_epoch_time_now(NULL)) {
             const void *chunk_buffer_ptr = NULL;
             const void *http_response_ptr = NULL;
-            uint32_t buf_len = 0, http_recv_len = 0;
+            uint32_t buf_len = 0, http_recv_len = 0, stt_failed = 0;
             char *chunk_fname = NULL;
 
             if((buf_len = switch_buffer_peek_zerocopy(chunk_buffer, &chunk_buffer_ptr)) > 0 && chunk_buffer_ptr) {
@@ -130,38 +130,39 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Service response [%s]\n", (char *)http_response_ptr);
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Text [%s]\n", txt ? txt : "null");
 #endif
-                        if(asr_ctx->fl_js_out) {
-                            char *json = switch_mprintf("{\"chunks\":%d, \"duration\":%d, \"file\":\"%s\", \"text\":\"%s\"}", schunks, (uint32_t)(buf_len / asr_ctx->samplerate), chunk_fname, txt ? txt : "");
-                            if(switch_queue_trypush(asr_ctx->q_text, json) == SWITCH_STATUS_SUCCESS) {
-                                switch_mutex_lock(asr_ctx->mutex);
-                                asr_ctx->transcription_results++;
-                                switch_mutex_unlock(asr_ctx->mutex);
-                            } else {
-                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
-                                switch_safe_free(json);
-                            }
-                            switch_safe_free(txt);
+                        if(!txt) txt = strdup("");
+                        if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
+                            switch_mutex_lock(asr_ctx->mutex);
+                            asr_ctx->transcription_results++;
+                            switch_mutex_unlock(asr_ctx->mutex);
                         } else {
-                            if(!txt) txt = strdup("");
-                            if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
-                                switch_mutex_lock(asr_ctx->mutex);
-                                asr_ctx->transcription_results++;
-                                switch_mutex_unlock(asr_ctx->mutex);
-                            } else {
-                                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
-                                switch_safe_free(txt);
-                            }
+                            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
+                            switch_safe_free(txt);
                         }
                     } else {
+                        stt_failed = 1;
                         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Empty service response!\n");
                     }
                 } else {
+                    stt_failed = 1;
                     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unable to perform request!\n");
+                }
+
+                if(stt_failed) {
+                    char *txt = strdup("[transcription failed]");
+                    if(switch_queue_trypush(asr_ctx->q_text, txt) == SWITCH_STATUS_SUCCESS) {
+                        switch_mutex_lock(asr_ctx->mutex);
+                        asr_ctx->transcription_results++;
+                        switch_mutex_unlock(asr_ctx->mutex);
+                    } else {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Queue is full!\n");
+                        switch_safe_free(txt);
+                    }
                 }
 
                 schunks = 0;
                 sentence_timeout = 0;
-                if(!asr_ctx->fl_keep_tmp) unlink(chunk_fname);
+                unlink(chunk_fname);
                 switch_safe_free(chunk_fname);
                 switch_buffer_zero(chunk_buffer);
             }
@@ -216,8 +217,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->channels = 1;
     asr_ctx->chunk_buffer_size = 0;
     asr_ctx->samplerate = samplerate;
-    asr_ctx->silence_sec = globals.sentence_silence_sec;
-    asr_ctx->fl_keep_tmp = SWITCH_FALSE;
+    asr_ctx->silence_sec = globals.speech_silence_sec;
 
     asr_ctx->opt_model = globals.opt_model;
     asr_ctx->opt_api_key = globals.api_key;
@@ -328,7 +328,7 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
         switch_mutex_lock(asr_ctx->mutex);
         asr_ctx->frame_len = data_len;
         asr_ctx->vad_buffer_size = asr_ctx->frame_len * VAD_STORE_FRAMES;
-        asr_ctx->chunk_buffer_size = asr_ctx->samplerate * globals.sentence_max_sec;
+        asr_ctx->chunk_buffer_size = asr_ctx->samplerate * globals.speech_max_sec;
         switch_mutex_unlock(asr_ctx->mutex);
 
         if(switch_buffer_create(ah->memory_pool, &asr_ctx->vad_buffer, asr_ctx->vad_buffer_size) != SWITCH_STATUS_SUCCESS) {
@@ -367,8 +367,6 @@ static switch_status_t asr_feed(switch_asr_handle_t *ah, void *data, unsigned in
     }
 
     if(fl_has_audio) {
-        asr_ctx->speech_start_expiry = 0;
-
         if(vad_state == SWITCH_VAD_STATE_START_TALKING && asr_ctx->vad_stored_frames > 0) {
             xdata_buffer_t *tau_buf = NULL;
             const void *ptr = NULL;
@@ -434,10 +432,6 @@ static switch_status_t asr_check_results(switch_asr_handle_t *ah, switch_asr_fla
         return SWITCH_STATUS_FALSE;
     }
 
-    if(asr_ctx->speech_start_expiry && asr_ctx->speech_start_expiry <= switch_epoch_time_now(NULL)) {
-        return SWITCH_STATUS_SUCCESS;
-    }
-
     return (asr_ctx->transcription_results > 0 ? SWITCH_STATUS_SUCCESS : SWITCH_STATUS_FALSE);
 }
 
@@ -448,21 +442,8 @@ static switch_status_t asr_get_results(switch_asr_handle_t *ah, char **xmlstr, s
 
     assert(asr_ctx != NULL);
 
-    if(asr_ctx->speech_start_expiry > 0 && asr_ctx->speech_start_expiry <= switch_epoch_time_now(NULL)) {
-#ifdef MOD_OPENAI_ASR_DEBUG
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Speech start timeout\n");
-#endif
-
-        *xmlstr = strdup("[speech start timeout]");
-        return SWITCH_STATUS_SUCCESS;
-    }
-
     if(switch_queue_trypop(asr_ctx->q_text, &pop) == SWITCH_STATUS_SUCCESS) {
         if(pop) {
-#ifdef MOD_OPENAI_ASR_DEBUG
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Return text [%s]\n", pop ? (char *)pop : "null");
-#endif
-
             *xmlstr = (char *)pop;
             status = SWITCH_STATUS_SUCCESS;
 
@@ -480,7 +461,6 @@ static switch_status_t asr_start_input_timers(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->speech_start_expiry = asr_ctx->speech_start_timeout ? asr_ctx->speech_start_timeout + switch_epoch_time_now(NULL) : 0;
     asr_ctx->fl_start_timers = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -491,7 +471,6 @@ static switch_status_t asr_pause(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->speech_start_expiry = 0;
     asr_ctx->fl_pause = SWITCH_TRUE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -502,7 +481,6 @@ static switch_status_t asr_resume(switch_asr_handle_t *ah) {
 
     assert(asr_ctx != NULL);
 
-    asr_ctx->speech_start_expiry = 0;
     asr_ctx->fl_pause = SWITCH_FALSE;
 
     return SWITCH_STATUS_SUCCESS;
@@ -519,16 +497,8 @@ static void asr_text_param(switch_asr_handle_t *ah, char *param, const char *val
         if(val) asr_ctx->opt_model = switch_core_strdup(ah->memory_pool, val);
     } else if(strcasecmp(param, "key") == 0) {
         if(val) asr_ctx->opt_api_key = switch_core_strdup(ah->memory_pool, val);
-    } else if(strcasecmp(param, "timeout") == 0) {
-        if(val) asr_ctx->speech_start_timeout = atoi(val);
     } else if(strcasecmp(param, "silence") == 0) {
         if(val) asr_ctx->silence_sec = atoi(val);
-    } else if(strcasecmp(param, "keep-tmp") == 0) {
-        if(val) asr_ctx->fl_keep_tmp = switch_true(val);
-    } else if(strcasecmp(param, "jsout") == 0) {
-        if(val) asr_ctx->fl_js_out = switch_true(val);
-    } else if(strcasecmp(param, "live") == 0) {
-        if(val) asr_ctx->fl_live_cap = switch_true(val);
     }
 }
 
@@ -673,10 +643,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.opt_encoding = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "model")) {
                 if(val) globals.opt_model= switch_core_strdup(pool, val);
-            } else if(!strcasecmp(var, "sentence-max-sec")) {
-                if(val) globals.sentence_max_sec = atoi(val);
-            } else if(!strcasecmp(var, "sentence-silence-sec")) {
-                if(val) globals.sentence_silence_sec = atoi(val);
+            } else if(!strcasecmp(var, "speech-max-sec")) {
+                if(val) globals.speech_max_sec = atoi(val);
+            } else if(!strcasecmp(var, "speech-silence-sec")) {
+                if(val) globals.speech_silence_sec = atoi(val);
             } else if(!strcasecmp(var, "request-timeout")) {
                 if(val) globals.request_timeout = atoi(val);
             } else if(!strcasecmp(var, "connect-timeout")) {
@@ -693,8 +663,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     }
 
     globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "wav";
-    globals.sentence_max_sec = !globals.sentence_max_sec ? DEF_SENTENCE_MAX_TIME : globals.sentence_max_sec;
-    globals.sentence_silence_sec = !globals.sentence_silence_sec ? DEF_SENTENCE_SILENCE : globals.sentence_silence_sec;
+    globals.speech_max_sec = !globals.speech_max_sec ? 35 : globals.speech_max_sec;
+    globals.speech_silence_sec = !globals.speech_silence_sec ? 3 : globals.speech_silence_sec;
 
     globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-cache", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
     if(switch_directory_exists(globals.tmp_path, NULL) != SWITCH_STATUS_SUCCESS) {

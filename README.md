@@ -1,6 +1,6 @@
 <p>
   OpenAI Speech-To-Text service for the Freeswitch. <br>
-  Features: vad, audio keeping, flexible adjustment <br>
+  Features: vad, flexible adjustments. <br>
   Available through: asr_interface, commnad api <br>
   <br>
   If you have troubles with building this module, pay attention to this <a href="https://github.com/akscf/mod_openai_asr/issues/1">issue</a> and <a href="https://github.com/akscf/mod_openai_asr/issues/1#issuecomment-2339346528"> the comment</a>, 

@@ -1,10 +1,8 @@
 <configuration name="openai_asr.conf" description="">
     <settings>
-        <!-- api settings -->
         <param name="api-url" value="https://api.openai.com/v1/audio/transcriptions" />
         <param name="api-key" value="---YOUR-API-KEY---" />
 
-        <!-- curl settings -->
         <param name="connect-timeout" value="10" />
         <param name="request-timeout" value="25" />
         <param name="log-http-errors" value="true" />
@@ -12,9 +10,8 @@
    <!-- <param name="proxy-credentials" value="" /> -->
    <!-- <param name="user-agent" value="Mozilla/1.0" /> -->
 
-        <!-- capture settings -->
-        <param name="sentence-max-sec" value="45" />
-        <param name="sentence-silence-sec" value="3" />
+        <param name="speech-max-sec" value="45" />
+        <param name="speech-silence-sec" value="3" />
 
         <param name="vad-debug" value="false" />
         <param name="vad-silence-ms" value="400" />

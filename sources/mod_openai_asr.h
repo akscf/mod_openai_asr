@@ -30,24 +30,22 @@
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
 #define MOD_CONFIG_NAME         "openai_asr.conf"
-#define MOD_VERSION             "1.0.3"
-#define QUEUE_SIZE              1024
+#define MOD_VERSION             "1.0.4"
+#define QUEUE_SIZE              128
 #define VAD_STORE_FRAMES        64
 #define VAD_RECOVERY_FRAMES     20
-#define DEF_SENTENCE_MAX_TIME   35
-#define DEF_SENTENCE_SILENCE    3
 
 //#define MOD_OPENAI_ASR_DEBUG
 
 typedef struct {
     switch_mutex_t          *mutex;
     uint32_t                active_threads;
-    uint32_t                sentence_max_sec;
-    uint32_t                sentence_silence_sec;
+    uint32_t                speech_max_sec;
+    uint32_t                speech_silence_sec;
     uint32_t                vad_silence_ms;
     uint32_t                vad_voice_ms;
     uint32_t                vad_threshold;
-    uint32_t                request_timeout;    // seconds
+    uint32_t                request_timeout;    // secondss
     uint32_t                connect_timeout;    // seconds
     uint8_t                 fl_vad_debug;
     uint8_t                 fl_shutdown;
@@ -82,17 +80,12 @@ typedef struct {
     uint32_t                samplerate;
     uint32_t                channels;
     uint32_t                frame_len;
-    uint32_t                speech_start_timeout;
-    uint32_t                speech_start_expiry;
     uint32_t                silence_sec;
     uint8_t                 fl_start_timers;
     uint8_t                 fl_pause;
     uint8_t                 fl_vad_first_cycle;
     uint8_t                 fl_destroyed;
     uint8_t                 fl_abort;
-    uint8_t                 fl_keep_tmp;
-    uint8_t                 fl_js_out;
-    uint8_t                 fl_live_cap;
 } asr_ctx_t;
 
 typedef struct {
