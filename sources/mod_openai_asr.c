@@ -36,7 +36,7 @@ SWITCH_MODULE_DEFINITION(mod_openai_asr, mod_openai_asr_load, mod_openai_asr_shu
 static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void *obj) {
     volatile asr_ctx_t *_ref = (asr_ctx_t *)obj;
     asr_ctx_t *asr_ctx = (asr_ctx_t *)_ref;
-    switch_status_t status;
+    switch_status_t status = SWITCH_STATUS_FALSE;
     switch_buffer_t *chunk_buffer = NULL;
     switch_buffer_t *curl_recv_buffer = NULL;
     switch_memory_pool_t *pool = NULL;
@@ -119,9 +119,13 @@ static void *SWITCH_THREAD_FUNC transcribe_thread(switch_thread_t *thread, void 
                 chunk_fname = chunk_write((switch_byte_t *)chunk_buffer_ptr, buf_len, asr_ctx->channels, asr_ctx->samplerate, globals.opt_encoding);
             }
             if(chunk_fname) {
-                switch_buffer_zero(curl_recv_buffer);
+                for(uint32_t rqtry = 0; rqtry < asr_ctx->retries_on_error; rqtry++) {
+                    switch_buffer_zero(curl_recv_buffer);
+                    status = curl_perform(curl_recv_buffer, asr_ctx->opt_api_key, asr_ctx->opt_model, chunk_fname, &globals);
+                    if(status == SWITCH_STATUS_SUCCESS || globals.fl_shutdown || asr_ctx->fl_destroyed) { break; }
+                    switch_yield(1000);
+                }
 
-                status = curl_perform(curl_recv_buffer, asr_ctx->opt_api_key, asr_ctx->opt_model, chunk_fname, &globals);
                 http_recv_len = switch_buffer_peek_zerocopy(curl_recv_buffer, &http_response_ptr);
                 if(status == SWITCH_STATUS_SUCCESS) {
                     if(http_response_ptr && http_recv_len) {
@@ -218,6 +222,7 @@ static switch_status_t asr_open(switch_asr_handle_t *ah, const char *codec, int 
     asr_ctx->chunk_buffer_size = 0;
     asr_ctx->samplerate = samplerate;
     asr_ctx->silence_sec = globals.speech_silence_sec;
+    asr_ctx->retries_on_error = globals.retries_on_error;
 
     asr_ctx->opt_model = globals.opt_model;
     asr_ctx->opt_api_key = globals.api_key;
@@ -653,6 +658,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
                 if(val) globals.connect_timeout = atoi(val);
             } else if(!strcasecmp(var, "log-http-errors")) {
                 if(val) globals.fl_log_http_errors = switch_true(val);
+            } else if(!strcasecmp(var, "retries-on-error")) {
+                if(val) globals.retries_on_error = atoi(val);
             }
         }
     }
@@ -665,6 +672,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_openai_asr_load) {
     globals.opt_encoding = globals.opt_encoding ?  globals.opt_encoding : "wav";
     globals.speech_max_sec = !globals.speech_max_sec ? 35 : globals.speech_max_sec;
     globals.speech_silence_sec = !globals.speech_silence_sec ? 3 : globals.speech_silence_sec;
+    globals.retries_on_error = !globals.retries_on_error ? 1 : globals.retries_on_error;
 
     globals.tmp_path = switch_core_sprintf(pool, "%s%sopenai-asr-cache", SWITCH_GLOBAL_dirs.temp_dir, SWITCH_PATH_SEPARATOR);
     if(switch_directory_exists(globals.tmp_path, NULL) != SWITCH_STATUS_SUCCESS) {

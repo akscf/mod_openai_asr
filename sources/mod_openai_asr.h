@@ -47,6 +47,7 @@ typedef struct {
     uint32_t                vad_threshold;
     uint32_t                request_timeout;    // secondss
     uint32_t                connect_timeout;    // seconds
+    uint32_t                retries_on_error;
     uint8_t                 fl_vad_debug;
     uint8_t                 fl_shutdown;
     uint8_t                 fl_log_http_errors;
@@ -73,6 +74,7 @@ typedef struct {
     char                    *opt_model;
     char                    *opt_api_key;
     int32_t                 transcription_results;
+    uint32_t                retries_on_error;
     uint32_t                vad_buffer_size;
     uint32_t                vad_stored_frames;
     uint32_t                chunk_buffer_size;

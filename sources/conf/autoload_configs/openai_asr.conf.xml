@@ -12,6 +12,7 @@
 
         <param name="speech-max-sec" value="45" />
         <param name="speech-silence-sec" value="3" />
+        <param name="retries-on-error" value="3" />
 
         <param name="vad-debug" value="false" />
         <param name="vad-silence-ms" value="400" />
